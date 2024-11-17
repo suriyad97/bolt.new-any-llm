@@ -11,10 +11,12 @@ import { useChatHistory } from '~/lib/persistence';
 import { chatStore } from '~/lib/stores/chat';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { fileModificationsToHTML } from '~/utils/diff';
-import { DEFAULT_MODEL } from '~/utils/constants';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER, PROVIDER_LIST } from '~/utils/constants';
 import { cubicEasingFn } from '~/utils/easings';
 import { createScopedLogger, renderLogger } from '~/utils/logger';
 import { BaseChat } from './BaseChat';
+import Cookies from 'js-cookie';
+import type { ProviderInfo } from '~/utils/types';
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
@@ -73,17 +75,29 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [chatStarted, setChatStarted] = useState(initialMessages.length > 0);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState(() => {
+    const savedModel = Cookies.get('selectedModel');
+    return savedModel || DEFAULT_MODEL;
+  });
+  const [provider, setProvider] = useState(() => {
+    const savedProvider = Cookies.get('selectedProvider');
+    return PROVIDER_LIST.find(p => p.name === savedProvider) || DEFAULT_PROVIDER;
+  });
 
   const { showChat } = useStore(chatStore);
 
   const [animationScope, animate] = useAnimate();
 
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+
   const { messages, isLoading, input, handleInputChange, setInput, stop, append } = useChat({
     api: '/api/chat',
+    body: {
+      apiKeys
+    },
     onError: (error) => {
       logger.error('Request failed\n\n', error);
-      toast.error('There was an error processing your request');
+      toast.error('There was an error processing your request: ' + (error.message ? error.message : "No details were returned"));
     },
     onFinish: () => {
       logger.debug('Finished streaming');
@@ -182,7 +196,7 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
        * manually reset the input and we'd have to manually pass in file attachments. However, those
        * aren't relevant here.
        */
-      append({ role: 'user', content: `[Model: ${model}]\n\n${diff}\n\n${_input}` });
+      append({ role: 'user', content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${diff}\n\n${_input}` });
 
       /**
        * After sending a new message we reset all modifications since the model
@@ -190,7 +204,7 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
        */
       workbenchStore.resetAllFileModifications();
     } else {
-      append({ role: 'user', content: `[Model: ${model}]\n\n${_input}` });
+      append({ role: 'user', content: `[Model: ${model}]\n\n[Provider: ${provider.name}]\n\n${_input}` });
     }
 
     setInput('');
@@ -201,6 +215,23 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
   };
 
   const [messageRef, scrollRef] = useSnapScroll();
+
+  useEffect(() => {
+    const storedApiKeys = Cookies.get('apiKeys');
+    if (storedApiKeys) {
+      setApiKeys(JSON.parse(storedApiKeys));
+    }
+  }, []);
+
+  const handleModelChange = (newModel: string) => {
+    setModel(newModel);
+    Cookies.set('selectedModel', newModel, { expires: 30 });
+  };
+
+  const handleProviderChange = (newProvider: ProviderInfo) => {
+    setProvider(newProvider);
+    Cookies.set('selectedProvider', newProvider.name, { expires: 30 });
+  };
 
   return (
     <BaseChat
@@ -214,7 +245,9 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
       promptEnhanced={promptEnhanced}
       sendMessage={sendMessage}
       model={model}
-      setModel={setModel}
+      setModel={handleModelChange}
+      provider={provider}
+      setProvider={handleProviderChange}
       messageRef={messageRef}
       scrollRef={scrollRef}
       handleInputChange={handleInputChange}
@@ -230,10 +263,16 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
         };
       })}
       enhancePrompt={() => {
-        enhancePrompt(input, (input) => {
-          setInput(input);
-          scrollTextArea();
-        });
+        enhancePrompt(
+          input,
+          (input) => {
+            setInput(input);
+            scrollTextArea();
+          },
+          model,
+          provider,
+          apiKeys
+        );
       }}
     />
   );
